@@ -1,0 +1,41 @@
+{
+  "name": "manueljmv-filecharts-extension",
+  "displayName": "DataFile Chart",
+  "description": "Reads data files with various separators and displays various chart types",
+  "version": "0.1.1",
+  "publisher": "manueljmv",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/manueljmv/vscode-highcharts-extension.git"
+  },
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "chart",
+    "highcharts",
+    "tsv",
+    "csv",
+    "visualization",
+    "boost"
+  ],
+  "main": "./extension.js",
+  "icon": "chart.png",
+  "activationEvents": [
+    "onCommand:extension.fileChart"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.fileChart",
+        "title": "Show Chart from Data File"
+      }
+    ]
+  },
+  "scripts": {},
+  "dependencies": {}
+}
