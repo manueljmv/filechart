@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "languages": [],
+  "exclude": [
+    "node_modules/**",
+    "bin/**",
+    "obj/**",
+    ".git/**",
+    "dist/**",
+    "build/**"
+  ],
+  "max_file_size": 1048576,
+  "git_hooks_enabled": true
+}

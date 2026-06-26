@@ -1,0 +1,9 @@
+.vscode/**
+.gitignore
+.gitattributes
+.github/**
+.codegraph/**
+**/.codegraph/**
+filechart.code-workspace
+*.vsix
+*.code-workspace

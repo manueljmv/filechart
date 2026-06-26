@@ -39,6 +39,7 @@ function activate(context) {
         const lastUsed = lastUsedColumns.get(fileName);
         const options = headers.map((header, index) => ({
             label: header,
+            index,
             picked: lastUsed ? lastUsed.includes(index) : index > 0
         }));
 
@@ -48,11 +49,14 @@ function activate(context) {
         });
 
         if (selectedItems && selectedItems.length > 0) {
-            const selectedIndexes = selectedItems.map(item => headers.indexOf(item.label));
-            lastUsedColumns.set(fileName, selectedIndexes);
-            return [0, ...selectedIndexes];
+            const selectedIndexes = selectedItems
+                .map(item => item.index)
+                .filter(idx => idx !== 0);
+            const finalIndexes = [0, ...selectedIndexes];
+            lastUsedColumns.set(fileName, finalIndexes);
+            return finalIndexes;
         } else if (lastUsed) {
-            return [0, ...lastUsed];
+            return lastUsed;
         }
         return null;
     }
@@ -122,43 +126,47 @@ function activate(context) {
     }
 
     function processData(headers, data, selectedColumns, statistics, periods) {
-        const categories = data.map(row => row[0]);
-        const series = selectedColumns.slice(1).map(colIndex => ({
+        const categories = data.map(row => (row && row.length > 0 ? row[0] : null));
+        const baseSeries = selectedColumns.slice(1).map(colIndex => ({
             name: headers[colIndex],
             data: data.map(row => {
-                const value = parseFloat(row[colIndex]);
+                const raw = row && row[colIndex] !== undefined ? row[colIndex] : '';
+                const value = parseFloat(raw);
                 return isNaN(value) ? null : value;
             })
         }));
 
-        // Add statistics series
-        series.forEach(s => {
+        const statSeries = [];
+        baseSeries.forEach(s => {
             statistics.forEach(stat => {
                 switch (stat) {
                     case 'Max':
-                        series.push(createStatSeries(s, 'Max', Math.max));
+                        statSeries.push(createStatSeries(s, 'Max', values => values.length ? Math.max(...values) : null));
                         break;
                     case 'Min':
-                        series.push(createStatSeries(s, 'Min', Math.min));
+                        statSeries.push(createStatSeries(s, 'Min', values => values.length ? Math.min(...values) : null));
                         break;
                     case 'Average':
-                        series.push(createStatSeries(s, 'Avg', arr => arr.reduce((a, b) => a + b, 0) / arr.length));
+                        statSeries.push(createStatSeries(s, 'Avg', values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null));
                         break;
                     case 'SMA':
-                        series.push(createSMA(s, periods.sma));
+                        statSeries.push(createSMA(s, periods.sma));
                         break;
                     case 'EMA':
-                        series.push(createEMA(s, periods.ema));
+                        statSeries.push(createEMA(s, periods.ema));
                         break;
                 }
             });
         });
 
-        return { series, categories };
+        return { series: [...baseSeries, ...statSeries.filter(Boolean)], categories };
     }
 
     function createStatSeries(originalSeries, statName, statFunction) {
         const statValue = statFunction(originalSeries.data.filter(v => v !== null));
+        if (statValue === null || statValue === undefined || isNaN(statValue)) {
+            return null;
+        }
         return {
             name: `${originalSeries.name} (${statName})`,
             data: originalSeries.data.map(() => statValue),
@@ -168,14 +176,14 @@ function activate(context) {
     }
 
     function createSMA(originalSeries, period) {
+        const data = originalSeries.data;
         const smaData = [];
-        for (let i = 0; i < originalSeries.data.length; i++) {
+        for (let i = 0; i < data.length; i++) {
             if (i < period - 1) {
                 smaData.push(null);
             } else {
-                const slice = originalSeries.data.slice(i - period + 1, i + 1);
-                const avg = slice.reduce((sum, value) => sum + (value || 0), 0) / period;
-                smaData.push(avg);
+                const window = data.slice(i - period + 1, i + 1).filter(v => v !== null);
+                smaData.push(window.length > 0 ? window.reduce((a, b) => a + b, 0) / window.length : null);
             }
         }
         return {
@@ -187,16 +195,33 @@ function activate(context) {
     }
 
     function createEMA(originalSeries, period) {
+        const data = originalSeries.data;
         const k = 2 / (period + 1);
-        let ema = originalSeries.data[0];
-        const emaData = [ema];
+        const emaData = new Array(data.length).fill(null);
 
-        for (let i = 1; i < originalSeries.data.length; i++) {
-            const value = originalSeries.data[i];
-            if (value !== null) {
-                ema = value * k + ema * (1 - k);
+        let seedSum = 0;
+        let seedCount = 0;
+        let ema = null;
+        let seeded = false;
+
+        for (let i = 0; i < data.length; i++) {
+            const value = data[i];
+            if (!seeded) {
+                if (value !== null) {
+                    seedSum += value;
+                    seedCount++;
+                    if (seedCount === period) {
+                        ema = seedSum / period;
+                        emaData[i] = ema;
+                        seeded = true;
+                    }
+                }
+            } else {
+                if (value !== null) {
+                    ema = value * k + ema * (1 - k);
+                }
+                emaData[i] = ema;
             }
-            emaData.push(ema);
         }
 
         return {
@@ -234,45 +259,63 @@ function activate(context) {
                 null,
                 context.subscriptions
             );
+
+            panel.webview.onDidReceiveMessage(
+                message => {
+                    switch (message.command) {
+                        case 'stateUpdate':
+                            states.set(panelId, message.state);
+                            return;
+                        case 'error':
+                            vscode.window.showErrorMessage(message.text);
+                            return;
+                    }
+                },
+                undefined,
+                context.subscriptions
+            );
+
+            panel.onDidChangeViewState(
+                e => {
+                    if (e.webviewPanel.visible) {
+                        e.webviewPanel.webview.postMessage({ command: 'restoreState', state: states.get(panelId) });
+                    }
+                },
+                null,
+                context.subscriptions
+            );
         }
 
         const state = states.get(panelId);
-        panel.webview.html = getWebviewContent(series, categories, chartTitle, chartType, state);
-
-        panel.webview.onDidReceiveMessage(
-            message => {
-                switch (message.command) {
-                    case 'stateUpdate':
-                        states.set(panelId, message.state);
-                        return;
-                    case 'error':
-                        vscode.window.showErrorMessage(message.text);
-                        return;
-                }
-            },
-            undefined,
-            context.subscriptions
-        );
-
-        panel.onDidChangeViewState(
-            e => {
-                if (e.webviewPanel.visible) {
-                    e.webviewPanel.webview.postMessage({ command: 'restoreState', state: states.get(panelId) });
-                }
-            },
-            null,
-            context.subscriptions
-        );
+        panel.webview.html = getWebviewContent(panel.webview, series, categories, chartTitle, chartType, state);
     }
 
-    function getWebviewContent(series, categories, chartTitle, chartType, state) {
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function getWebviewContent(webview, series, categories, chartTitle, chartType, state) {
+        const cspSource = webview.cspSource;
+        const titleJs = JSON.stringify(chartTitle);
+        const typeJs = JSON.stringify(chartType);
+        const stateJs = JSON.stringify(state);
         return `
             <!DOCTYPE html>
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
+                <meta http-equiv="Content-Security-Policy"
+                      content="default-src 'none';
+                               img-src ${cspSource} https:;
+                               style-src 'unsafe-inline';
+                               script-src 'unsafe-inline' https://code.highcharts.com;">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>${chartTitle}</title>
+                <title>${escapeHtml(chartTitle)}</title>
                 <script src="https://code.highcharts.com/highcharts.js"></script>
                 <script src="https://code.highcharts.com/modules/boost.js"></script>
                 <script src="https://code.highcharts.com/modules/exporting.js"></script>
@@ -303,7 +346,7 @@ function activate(context) {
                         });
                         chart = Highcharts.chart('container', {
                             chart: {
-                                type: '${chartType}',
+                                type: ${typeJs},
                                 animation: false,
                                 boost: {
                                     enabled: true,
@@ -320,7 +363,7 @@ function activate(context) {
                                 }
                             },
                             title: {
-                                text: '${chartTitle}'
+                                text: ${titleJs}
                             },
                             xAxis: {
                                 categories: ${JSON.stringify(categories)},
@@ -407,7 +450,7 @@ function activate(context) {
                         chart.redraw();
                     }
 
-                    createChart(${JSON.stringify(state)});
+                    createChart(${stateJs});
 
                     function resizeChart() {
                         if (chart) {
